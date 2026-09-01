@@ -10,7 +10,9 @@ const { BRAND } = require('./constants');
 
 let discord = null;
 let api = null;
+let authflow = null;
 let realm = null;
+const gamertagCache = new Map(); // xuid -> gamertag
 let authenticated = false;
 let refreshing = false;
 let lastError = null;
@@ -77,7 +79,7 @@ async function createApi() {
     recursive: true,
   });
 
-  const authflow = new Authflow(
+  authflow = new Authflow(
     bridgeCfg.authId,
     bridgeCfg.authDir,
     {
@@ -89,6 +91,84 @@ async function createApi() {
   );
 
   return RealmAPI.from(authflow, 'bedrock');
+}
+
+// Resolve Xbox XUIDs to gamertags via the Xbox Live profile API.
+// The live-players endpoint returns XUIDs with name=null, so we look the
+// gamertags up ourselves using the same authenticated Xbox session.
+// Results are cached because gamertags rarely change.
+async function resolveGamertags(xuids) {
+  const result = new Map();
+  const missing = [];
+
+  for (const xuid of xuids) {
+    const id = String(xuid);
+    if (gamertagCache.has(id)) {
+      result.set(id, gamertagCache.get(id));
+    } else {
+      missing.push(id);
+    }
+  }
+
+  if (!missing.length || !authflow) {
+    return result;
+  }
+
+  try {
+    const { userHash, XSTSToken } = await authflow.getXboxToken(
+      'http://xboxlive.com',
+    );
+
+    const response = await fetch(
+      'https://profile.xboxlive.com/users/batch/profile/settings',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `XBL3.0 x=${userHash};${XSTSToken}`,
+          'x-xbl-contract-version': '3',
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({
+          userIds: missing,
+          settings: ['Gamertag'],
+        }),
+      },
+    );
+
+    if (!response.ok) {
+      console.warn(
+        'Xbox profile lookup failed:',
+        response.status,
+        response.statusText,
+      );
+      return result;
+    }
+
+    const data = await response.json();
+    const users = Array.isArray(data?.profileUsers)
+      ? data.profileUsers
+      : [];
+
+    for (const user of users) {
+      const id = String(user?.id ?? '');
+      const setting = (user?.settings || []).find(
+        (s) => s?.id === 'Gamertag',
+      );
+      const tag = setting?.value;
+      if (id && tag) {
+        gamertagCache.set(id, tag);
+        result.set(id, tag);
+      }
+    }
+  } catch (error) {
+    console.warn(
+      'Xbox profile lookup error:',
+      error?.message || error,
+    );
+  }
+
+  return result;
 }
 
 async function fetchRealm() {
@@ -133,36 +213,45 @@ async function fetchLivePlayers(realmId) {
     return [];
   }
 
-  // TEMP DEBUG — remove once the response shape is confirmed.
-  try {
-    console.log(
-      '[DEBUG live/players] realmId=',
-      String(realmId),
-      'raw=',
-      JSON.stringify(data)?.slice(0, 1500),
-    );
-  } catch (_) {
-    console.log('[DEBUG live/players] realmId=', String(realmId), 'raw=<unserializable>', data);
+  // Response shape:
+  // { servers: [{ id, full, players: [{ uuid(=XUID), name(null), online }] }] }
+  const servers = Array.isArray(data?.servers) ? data.servers : [];
+
+  if (!servers.length) {
+    return [];
   }
 
-  // Response shape: { servers: [{ id, players: [{ uuid|playerId, name }] }] }
-  const servers = Array.isArray(data?.servers) ? data.servers : [];
+  // The endpoint only returns servers this account can see, and the server
+  // id here does NOT equal the world/realm id. Prefer an exact id match,
+  // otherwise fall back to the first (typically only) server.
   const wanted = String(realmId);
-
-  const match = servers.find(
-    (server) => String(server?.id ?? '') === wanted,
-  );
+  const match =
+    servers.find((server) => String(server?.id ?? '') === wanted) ||
+    servers[0];
 
   const players = Array.isArray(match?.players) ? match.players : [];
 
-  return [
-    ...new Set(
-      players
-        .map((player) => player?.name || player?.uuid || player?.playerId)
-        .filter(Boolean)
-        .map(String),
-    ),
-  ].sort((a, b) => a.localeCompare(b));
+  // Only players actually online right now.
+  const onlineXuids = players
+    .filter((player) => player?.online)
+    .map((player) => player?.uuid || player?.playerId || player?.xuid)
+    .filter(Boolean)
+    .map(String);
+
+  if (!onlineXuids.length) {
+    return [];
+  }
+
+  // The endpoint gives XUIDs with name=null, so resolve gamertags.
+  const tags = await resolveGamertags(onlineXuids);
+
+  const names = onlineXuids.map((xuid) => {
+    const tag = tags.get(String(xuid));
+    // Fallback label if a gamertag can't be resolved.
+    return tag || `Player-${String(xuid).slice(-4)}`;
+  });
+
+  return [...new Set(names)].sort((a, b) => a.localeCompare(b));
 }
 
 async function refreshData() {
@@ -188,20 +277,6 @@ async function refreshData() {
   try {
     realm = await fetchRealm();
 
-    // TEMP DEBUG — remove once player detection is confirmed.
-    try {
-      console.log(
-        '[DEBUG realm] id=',
-        realm?.id,
-        'state=',
-        realm?.state,
-        'players=',
-        JSON.stringify(realm?.players)?.slice(0, 1000),
-      );
-    } catch (_) {
-      console.log('[DEBUG realm] id=', realm?.id, 'players=<unserializable>');
-    }
-
     // First try the online flags on the realm object itself.
     onlinePlayers = Array.isArray(realm?.players)
       ? realm.players
@@ -211,10 +286,9 @@ async function refreshData() {
           .sort((a, b) => a.localeCompare(b))
       : [];
 
-    // Bedrock realms often don't populate players[].online, so fall back to
-    // the live-players endpoint when the realm object reported nobody.
-    // TEMP DEBUG: call unconditionally so we always see the endpoint output.
-    if (realm?.id != null) {
+    // Bedrock realms typically return realm.players as null, so fall back to
+    // the live-players endpoint whenever the realm object reported nobody.
+    if (!onlinePlayers.length && realm?.id != null) {
       const live = await fetchLivePlayers(realm.id);
       if (live.length) {
         onlinePlayers = live;

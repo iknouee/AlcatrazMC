@@ -6,6 +6,7 @@ const { BRAND } = require('../utils/constants');
 module.exports = {
   data: new SlashCommandBuilder().setName('players').setDescription('Show players currently online on the Alcatraz Realm'),
   async execute(interaction) {
+    await interaction.deferReply();
     const state = bridge.getState();
     const list = state.players.length
       ? state.players.map(x => `• ${x}`).join('\n')
@@ -17,6 +18,6 @@ module.exports = {
       .setDescription(`\`\`\`\n${list}\n\`\`\``)
       .setFooter({ text: `${state.players.length} player(s) online • Realms API • No bot slot used` });
 
-    return interaction.reply({ embeds: [embed] });
+    return interaction.editReply({ embeds: [embed] });
   }
 };

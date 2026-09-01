@@ -196,8 +196,8 @@ async function fetchRealm() {
 // of whether the installed library version exposes getLivePlayerLists(),
 // and is used as a fallback because realm.players[].online is often not
 // populated for Bedrock realms fetched via invite.
-async function fetchLivePlayers(realmId) {
-  if (!api?.rest || typeof api.rest.get !== 'function' || !realmId) {
+async function fetchLivePlayers(realmObj) {
+  if (!api?.rest || typeof api.rest.get !== 'function' || !realmObj?.id) {
     return [];
   }
 
@@ -221,13 +221,34 @@ async function fetchLivePlayers(realmId) {
     return [];
   }
 
-  // The endpoint only returns servers this account can see, and the server
-  // id here does NOT equal the world/realm id. Prefer an exact id match,
-  // otherwise fall back to the first (typically only) server.
-  const wanted = String(realmId);
-  const match =
-    servers.find((server) => String(server?.id ?? '') === wanted) ||
-    servers[0];
+  // The endpoint returns EVERY server this account can see (including other
+  // people's realms we've joined). The server id here is not the world id,
+  // so match against every identifier the realm object carries. If nothing
+  // matches, return nobody — never guess, or we'd show a stranger's players.
+  const candidateIds = new Set(
+    [
+      realmObj.id,
+      realmObj.clubId,
+      realmObj.remoteSubscriptionId,
+    ]
+      .filter((v) => v != null)
+      .map(String),
+  );
+
+  const match = servers.find((server) =>
+    candidateIds.has(String(server?.id ?? '')),
+  );
+
+  if (!match) {
+    console.warn(
+      'Live players: no server matched this realm.',
+      'realm ids=',
+      [...candidateIds].join(','),
+      'live server ids=',
+      servers.map((s) => s?.id).join(','),
+    );
+    return [];
+  }
 
   const players = Array.isArray(match?.players) ? match.players : [];
 
@@ -289,7 +310,7 @@ async function refreshData() {
     // Bedrock realms typically return realm.players as null, so fall back to
     // the live-players endpoint whenever the realm object reported nobody.
     if (!onlinePlayers.length && realm?.id != null) {
-      const live = await fetchLivePlayers(realm.id);
+      const live = await fetchLivePlayers(realm);
       if (live.length) {
         onlinePlayers = live;
       }

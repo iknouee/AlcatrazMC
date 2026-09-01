@@ -133,6 +133,18 @@ async function fetchLivePlayers(realmId) {
     return [];
   }
 
+  // TEMP DEBUG — remove once the response shape is confirmed.
+  try {
+    console.log(
+      '[DEBUG live/players] realmId=',
+      String(realmId),
+      'raw=',
+      JSON.stringify(data)?.slice(0, 1500),
+    );
+  } catch (_) {
+    console.log('[DEBUG live/players] realmId=', String(realmId), 'raw=<unserializable>', data);
+  }
+
   // Response shape: { servers: [{ id, players: [{ uuid|playerId, name }] }] }
   const servers = Array.isArray(data?.servers) ? data.servers : [];
   const wanted = String(realmId);
@@ -176,6 +188,20 @@ async function refreshData() {
   try {
     realm = await fetchRealm();
 
+    // TEMP DEBUG — remove once player detection is confirmed.
+    try {
+      console.log(
+        '[DEBUG realm] id=',
+        realm?.id,
+        'state=',
+        realm?.state,
+        'players=',
+        JSON.stringify(realm?.players)?.slice(0, 1000),
+      );
+    } catch (_) {
+      console.log('[DEBUG realm] id=', realm?.id, 'players=<unserializable>');
+    }
+
     // First try the online flags on the realm object itself.
     onlinePlayers = Array.isArray(realm?.players)
       ? realm.players
@@ -187,7 +213,8 @@ async function refreshData() {
 
     // Bedrock realms often don't populate players[].online, so fall back to
     // the live-players endpoint when the realm object reported nobody.
-    if (!onlinePlayers.length && realm?.id != null) {
+    // TEMP DEBUG: call unconditionally so we always see the endpoint output.
+    if (realm?.id != null) {
       const live = await fetchLivePlayers(realm.id);
       if (live.length) {
         onlinePlayers = live;

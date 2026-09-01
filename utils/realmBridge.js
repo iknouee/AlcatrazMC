@@ -33,48 +33,97 @@ function isConfigured() {
 
 function normalizeInvite(value) {
   if (!value) return null;
+
   const text = String(value).trim();
-  const match = text.match(/realms\.gg\/(?:invite\/)?([A-Za-z0-9_-]+)/i);
+
+  const match = text.match(
+    /realms\.gg\/(?:invite\/)?([A-Za-z0-9_-]+)/i,
+  );
+
   return match ? match[1] : text;
 }
 
 function deviceCodePrinter(data) {
   console.log('\n=== MICROSOFT REALMS API LOGIN REQUIRED ===');
-  console.log(data?.message || 'Open the Microsoft verification page and enter the displayed code.');
-  if (data?.user_code) console.log(`Code: ${data.user_code}`);
-  if (data?.verification_uri) console.log(`URL: ${data.verification_uri}`);
-  console.log('This login only authenticates the Realms API. It does NOT join the Realm or use a player slot.');
+  console.log(
+    data?.message ||
+      'Open the Microsoft verification page and enter the displayed code.',
+  );
+
+  if (data?.user_code) {
+    console.log(`Code: ${data.user_code}`);
+  }
+
+  if (data?.verification_uri) {
+    console.log(`URL: ${data.verification_uri}`);
+  }
+
+  console.log(
+    'This login only authenticates the Realms API. It does NOT join the Realm or use a player slot.',
+  );
+
   console.log(`Auth cache: ${bridgeCfg.authDir}`);
   console.log('===========================================\n');
 }
 
 function realmIsOpen(r) {
   const state = String(r?.state || '').toUpperCase();
+
   return state === 'OPEN' || state === 'ONLINE';
 }
 
 function getOnlineNames(r, liveLists = []) {
   const members = Array.isArray(r?.players) ? r.players : [];
+
   const byId = new Map();
-  for (const p of members) {
-    if (p?.uuid) byId.set(String(p.uuid), p.name || String(p.uuid));
+
+  for (const player of members) {
+    if (player?.uuid) {
+      byId.set(
+        String(player.uuid),
+        player.name || String(player.uuid),
+      );
+    }
   }
 
-  const direct = members.filter(p => p?.online).map(p => p.name).filter(Boolean);
-  if (direct.length) return [...new Set(direct)].sort((a, b) => a.localeCompare(b));
+  const direct = members
+    .filter((player) => player?.online)
+    .map((player) => player.name)
+    .filter(Boolean);
+
+  if (direct.length) {
+    return [...new Set(direct)].sort((a, b) =>
+      a.localeCompare(b),
+    );
+  }
 
   const serverId = String(r?.id ?? '');
-  const live = liveLists.find(x => String(x?.serverId ?? '') === serverId);
-  if (!live?.playerList?.length) return [];
 
-  return [...new Set(live.playerList.map(p => {
-    const id = String(p?.playerId || '');
-    return byId.get(id) || null;
-  }).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  const live = liveLists.find(
+    (entry) => String(entry?.serverId ?? '') === serverId,
+  );
+
+  if (!live?.playerList?.length) {
+    return [];
+  }
+
+  return [
+    ...new Set(
+      live.playerList
+        .map((player) => {
+          const id = String(player?.playerId || '');
+          return byId.get(id) || null;
+        })
+        .filter(Boolean),
+    ),
+  ].sort((a, b) => a.localeCompare(b));
 }
 
 async function createApi() {
-  fs.mkdirSync(bridgeCfg.authDir, { recursive: true });
+  fs.mkdirSync(bridgeCfg.authDir, {
+    recursive: true,
+  });
+
   const authflow = new Authflow(
     bridgeCfg.authId,
     bridgeCfg.authDir,
@@ -85,18 +134,27 @@ async function createApi() {
     },
     deviceCodePrinter,
   );
+
   return RealmAPI.from(authflow, 'bedrock');
 }
 
 async function fetchRealm() {
-  if (!api) api = await createApi();
+  if (!api) {
+    api = await createApi();
+  }
 
   if (bridgeCfg.realmId) {
     return api.getRealm(String(bridgeCfg.realmId));
   }
 
   const invite = normalizeInvite(bridgeCfg.realmInvite);
-  if (!invite) throw new Error('REALM_ID or REALM_INVITE is required.');
+
+  if (!invite) {
+    throw new Error(
+      'REALM_ID or REALM_INVITE is required.',
+    );
+  }
+
   return api.getRealmFromInvite(invite, false);
 }
 
@@ -105,30 +163,60 @@ async function refreshData() {
     authenticated = false;
     realm = null;
     onlinePlayers = [];
-    lastError = 'Realm API environment variables are not configured.';
+    lastError =
+      'Realm API environment variables are not configured.';
+
     await updateAllStatuses(false);
+
     return false;
   }
 
-  if (refreshing) return true;
+  if (refreshing) {
+    return true;
+  }
+
   refreshing = true;
   lastError = null;
 
   try {
     realm = await fetchRealm();
+
     let liveLists = [];
-    try { liveLists = await api.getLivePlayerLists(); } catch {}
-    onlinePlayers = getOnlineNames(realm, liveLists);
+
+    try {
+      liveLists = await api.getLivePlayerLists();
+    } catch (error) {
+      console.warn(
+        'Could not fetch live Realm player lists:',
+        error?.message || error,
+      );
+    }
+
+    onlinePlayers = getOnlineNames(
+      realm,
+      liveLists,
+    );
+
     authenticated = true;
     lastUpdate = Date.now();
+
     return true;
-  } catch (err) {
+  } catch (error) {
     authenticated = false;
-    lastError = err?.message || String(err);
-    console.error('Realm API refresh error:', lastError);
+
+    lastError =
+      error?.message ||
+      String(error);
+
+    console.error(
+      'Realm API refresh error:',
+      lastError,
+    );
+
     return false;
   } finally {
     refreshing = false;
+
     await updateAllStatuses(false);
   }
 }
@@ -140,91 +228,235 @@ function currentPlayers() {
 function statusEmbed(config = {}) {
   const configured = isConfigured();
   const open = realmIsOpen(realm);
-  let state = '⚪ NOT CONFIGURED';
-  if (configured && refreshing) state = '🟡 CHECKING';
-  else if (configured && authenticated && open) state = '🟢 ONLINE';
-  else if (configured && authenticated && !open) state = '🔴 CLOSED';
-  else if (configured) state = '🔴 API OFFLINE';
 
-  const maxPlayers = Number(realm?.maxPlayers || bridgeCfg.maxPlayers || 10);
+  let state = '⚪ NOT CONFIGURED';
+
+  if (configured && refreshing) {
+    state = '🟡 CHECKING';
+  } else if (
+    configured &&
+    authenticated &&
+    open
+  ) {
+    state = '🟢 ONLINE';
+  } else if (
+    configured &&
+    authenticated &&
+    !open
+  ) {
+    state = '🔴 CLOSED';
+  } else if (configured) {
+    state = '🔴 API OFFLINE';
+  }
+
+  const maxPlayers = Number(
+    realm?.maxPlayers ||
+      bridgeCfg.maxPlayers ||
+      10,
+  );
+
   const playerLines = onlinePlayers.length
-    ? onlinePlayers.map(name => `• ${name}`).join('\n')
-    : open ? 'No players are currently online.' : 'No players detected.';
+    ? onlinePlayers
+        .map((name) => `• ${name}`)
+        .join('\n')
+    : open
+      ? 'No players are currently online.'
+      : 'No players detected.';
+
+  const description = [
+    '> Live Realm information without an in-game bot account taking a player slot.',
+    '',
+    '📡 **REALM STATUS**',
+    '```',
+    `Status   • ${state.replace(/^[^ ]+ /, '')}`,
+    `Players  • ${onlinePlayers.length} / ${maxPlayers}`,
+    `Name     • ${realm?.name || 'Alcatraz Skygen'}`,
+    'Edition  • Minecraft Bedrock Realm',
+    '```',
+    '',
+    '👥 **ONLINE PLAYERS**',
+    `\`\`\`\n${playerLines.slice(0, 900)}\n\`\`\``,
+    '',
+    '> ✅ Uses the Realms API only — **no Minecraft player slot is used**.',
+  ];
+
+  if (lastError) {
+    description.push(
+      '',
+      `> ⚠️ Last API error: ${String(lastError).slice(0, 300)}`,
+    );
+  }
 
   return new EmbedBuilder()
-    .setColor(open ? 0x57F287 : BRAND.color)
-    .setTitle('📊 Alcatraz Skygen — Realm Status')
-    .setDescription([
-      '> Live Realm information without an in-game bot account taking a player slot.',
-      '',
-      '📡 **REALM**',
-      '```',
-      `Status   • ${state.replace(/^[^ ]+ /, '')}`,
-      `Players  • ${onlinePlayers.length} / ${maxPlayers}`,
-      `Name     • ${realm?.name || 'Alcatraz Skygen'}`,
-      'Edition  • Minecraft Bedrock Realm',
-      '```',
-      '',
-      '👥 **ONLINE PLAYERS**',
-      `\`\`\`\n${playerLines.slice(0, 900)}\n\`\`\``,
-      '',
-      '> ✅ Uses the Realms API only — **no Minecraft player slot is used**.',
-      lastError ? `\n> ⚠️ Last API error: ${String(lastError).slice(0, 300)}` : '',
-    ].filter(Boolean).join('\n'))
-    .setImage(config.bannerUrl || BRAND.banner)
+    .setColor(
+      open
+        ? 0x57f287
+        : BRAND.color,
+    )
+    .setTitle(
+      '📊 Alcatraz Skygen — Realm Status',
+    )
+    .setDescription(
+      description.join('\n'),
+    )
+    .setImage(
+      config.bannerUrl ||
+        BRAND.banner,
+    )
     .setFooter({
       text: lastUpdate
-        ? `Alcatraz Skygen • Updated ${new Date(lastUpdate).toLocaleTimeString('en-GB')}`
+        ? `Alcatraz Skygen • Updated ${new Date(
+            lastUpdate,
+          ).toLocaleTimeString('en-GB')}`
         : 'Alcatraz Skygen • Waiting for Realm API',
     })
     .setTimestamp();
 }
 
-async function resolveStatusChannel(guild, config) {
+async function resolveStatusChannel(
+  guild,
+  config,
+) {
   if (config.statusChannelId) {
-    const configured = await guild.channels.fetch(config.statusChannelId).catch(() => null);
-    if (configured?.isTextBased()) return configured;
+    const configured =
+      await guild.channels
+        .fetch(
+          config.statusChannelId,
+        )
+        .catch(() => null);
+
+    if (
+      configured?.isTextBased()
+    ) {
+      return configured;
+    }
   }
-  const byName = guild.channels.cache.find(c => c.name === '📊・realm-status' && c.isTextBased());
+
+  const byName =
+    guild.channels.cache.find(
+      (channel) =>
+        channel.name ===
+          '📊・realm-status' &&
+        channel.isTextBased(),
+    );
+
   if (byName) {
-    await saveConfig(guild, { statusChannelId: byName.id });
+    await saveConfig(guild, {
+      statusChannelId:
+        byName.id,
+    });
+
     return byName;
   }
+
   return null;
 }
 
-async function updateGuildStatus(guild) {
+async function updateGuildStatus(
+  guild,
+) {
   try {
-    const config = await loadConfig(guild);
-    const channel = await resolveStatusChannel(guild, config);
-    if (!channel) return;
+    const config =
+      await loadConfig(guild);
 
-    const embed = statusEmbed(config);
-    let msg = null;
-    if (config.statusMessageId) msg = await channel.messages.fetch(config.statusMessageId).catch(() => null);
+    const channel =
+      await resolveStatusChannel(
+        guild,
+        config,
+      );
 
-    if (msg) {
-      await msg.edit({ embeds: [embed], components: [] });
-    } else {
-      msg = await channel.send({ embeds: [embed] });
-      await saveConfig(guild, { statusMessageId: msg.id, statusChannelId: channel.id });
+    if (!channel) {
+      return;
     }
-  } catch (err) {
-    console.error('Realm status update failed:', err.message);
+
+    const embed =
+      statusEmbed(config);
+
+    let message = null;
+
+    if (
+      config.statusMessageId
+    ) {
+      message =
+        await channel.messages
+          .fetch(
+            config.statusMessageId,
+          )
+          .catch(() => null);
+    }
+
+    if (message) {
+      await message.edit({
+        embeds: [embed],
+        components: [],
+      });
+    } else {
+      message =
+        await channel.send({
+          embeds: [embed],
+        });
+
+      await saveConfig(guild, {
+        statusMessageId:
+          message.id,
+        statusChannelId:
+          channel.id,
+      });
+    }
+  } catch (error) {
+    console.error(
+      'Realm status update failed:',
+      error?.message || error,
+    );
   }
 }
 
-async function updateAllStatuses(refreshFirst = false) {
-  if (refreshFirst) await refreshData();
-  if (!discord) return;
-  for (const guild of discord.guilds.cache.values()) await updateGuildStatus(guild);
+async function updateAllStatuses(
+  refreshFirst = false,
+) {
+  if (refreshFirst) {
+    await refreshData();
+  }
+
+  if (!discord) {
+    return;
+  }
+
+  for (const guild of discord.guilds.cache.values()) {
+    await updateGuildStatus(
+      guild,
+    );
+  }
+
   if (discord.user) {
-    const count = currentPlayers().length;
-    const open = realmIsOpen(realm);
-    await discord.user.setPresence({
-      activities: [{ name: `${count} player${count === 1 ? '' : 's'} | Alcatraz`, type: ActivityType.Watching }],
-      status: open ? 'online' : 'idle',
-    }).catch(() => {});
+    const count =
+      currentPlayers().length;
+
+    const open =
+      realmIsOpen(realm);
+
+    try {
+      discord.user.setPresence({
+        activities: [
+          {
+            name: `${count} player${
+              count === 1
+                ? ''
+                : 's'
+            } | Alcatraz`,
+            type: ActivityType.Watching,
+          },
+        ],
+        status: open
+          ? 'online'
+          : 'idle',
+      });
+    } catch (error) {
+      console.error(
+        'Failed to update Discord presence:',
+        error?.message || error,
+      );
+    }
   }
 }
 
@@ -233,36 +465,74 @@ async function reconnect() {
   realm = null;
   authenticated = false;
   onlinePlayers = [];
+
   return refreshData();
 }
 
 async function init(client) {
   discord = client;
-  if (updateTimer) clearInterval(updateTimer);
+
+  if (updateTimer) {
+    clearInterval(
+      updateTimer,
+    );
+  }
 
   if (!isConfigured()) {
-    console.warn('Realm API disabled: set REALM_ID or REALM_INVITE.');
-    await updateAllStatuses(false);
+    console.warn(
+      'Realm API disabled: set REALM_ID or REALM_INVITE.',
+    );
+
+    await updateAllStatuses(
+      false,
+    );
+
     return;
   }
 
   await refreshData();
-  updateTimer = setInterval(() => refreshData().catch(() => {}), bridgeCfg.interval);
+
+  updateTimer = setInterval(
+    () => {
+      refreshData().catch(
+        (error) => {
+          console.error(
+            'Realm refresh timer failed:',
+            error?.message ||
+              error,
+          );
+        },
+      );
+    },
+    bridgeCfg.interval,
+  );
 }
 
 function getState() {
   return {
-    configured: isConfigured(),
+    configured:
+      isConfigured(),
     authenticated,
     refreshing,
-    connected: authenticated,
-    realmOpen: realmIsOpen(realm),
+    connected:
+      authenticated,
+    realmOpen:
+      realmIsOpen(realm),
     lastError,
     lastUpdate,
-    players: currentPlayers(),
-    maxPlayers: Number(realm?.maxPlayers || bridgeCfg.maxPlayers || 10),
-    realmName: realm?.name || null,
-    realmState: realm?.state || null,
+    players:
+      currentPlayers(),
+    maxPlayers: Number(
+      realm?.maxPlayers ||
+        bridgeCfg.maxPlayers ||
+        10,
+    ),
+    realmName:
+      realm?.name ||
+      null,
+    realmState:
+      realm?.state ||
+      null,
     usesPlayerSlot: false,
   };
 }

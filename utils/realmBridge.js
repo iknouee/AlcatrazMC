@@ -111,6 +111,48 @@ async function fetchRealm() {
   return api.getRealmFromInvite(invite, false);
 }
 
+// Direct call to the Bedrock live-players endpoint using the authenticated
+// REST client that prismarine-realms already sets up. This works regardless
+// of whether the installed library version exposes getLivePlayerLists(),
+// and is used as a fallback because realm.players[].online is often not
+// populated for Bedrock realms fetched via invite.
+async function fetchLivePlayers(realmId) {
+  if (!api?.rest || typeof api.rest.get !== 'function' || !realmId) {
+    return [];
+  }
+
+  let data;
+
+  try {
+    data = await api.rest.get('/activities/live/players');
+  } catch (error) {
+    console.warn(
+      'Live players endpoint unavailable:',
+      error?.message || error,
+    );
+    return [];
+  }
+
+  // Response shape: { servers: [{ id, players: [{ uuid|playerId, name }] }] }
+  const servers = Array.isArray(data?.servers) ? data.servers : [];
+  const wanted = String(realmId);
+
+  const match = servers.find(
+    (server) => String(server?.id ?? '') === wanted,
+  );
+
+  const players = Array.isArray(match?.players) ? match.players : [];
+
+  return [
+    ...new Set(
+      players
+        .map((player) => player?.name || player?.uuid || player?.playerId)
+        .filter(Boolean)
+        .map(String),
+    ),
+  ].sort((a, b) => a.localeCompare(b));
+}
+
 async function refreshData() {
   if (!isConfigured()) {
     authenticated = false;
@@ -134,6 +176,7 @@ async function refreshData() {
   try {
     realm = await fetchRealm();
 
+    // First try the online flags on the realm object itself.
     onlinePlayers = Array.isArray(realm?.players)
       ? realm.players
           .filter((player) => player?.online)
@@ -141,6 +184,15 @@ async function refreshData() {
           .filter(Boolean)
           .sort((a, b) => a.localeCompare(b))
       : [];
+
+    // Bedrock realms often don't populate players[].online, so fall back to
+    // the live-players endpoint when the realm object reported nobody.
+    if (!onlinePlayers.length && realm?.id != null) {
+      const live = await fetchLivePlayers(realm.id);
+      if (live.length) {
+        onlinePlayers = live;
+      }
+    }
 
     authenticated = true;
     lastUpdate = Date.now();

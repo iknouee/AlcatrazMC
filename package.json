@@ -1,0 +1,20 @@
+{
+  "name": "alcatraz-skygen-bot",
+  "version": "4.0.0",
+  "description": "Alcatraz Skygen Discord bot with panels, tickets, Discord config storage and slot-free Minecraft Bedrock Realms API status.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "deploy": "node deploy-commands.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "discord.js": "^14.22.1",
+    "dotenv": "^16.6.1",
+    "express": "^5.1.0",
+    "prismarine-auth": "^3.1.1",
+    "prismarine-realms": "^1.6.0"
+  }
+}

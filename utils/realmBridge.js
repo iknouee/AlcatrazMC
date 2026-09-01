@@ -72,53 +72,6 @@ function realmIsOpen(r) {
   return state === 'OPEN' || state === 'ONLINE';
 }
 
-function getOnlineNames(r, liveLists = []) {
-  const members = Array.isArray(r?.players) ? r.players : [];
-
-  const byId = new Map();
-
-  for (const player of members) {
-    if (player?.uuid) {
-      byId.set(
-        String(player.uuid),
-        player.name || String(player.uuid),
-      );
-    }
-  }
-
-  const direct = members
-    .filter((player) => player?.online)
-    .map((player) => player.name)
-    .filter(Boolean);
-
-  if (direct.length) {
-    return [...new Set(direct)].sort((a, b) =>
-      a.localeCompare(b),
-    );
-  }
-
-  const serverId = String(r?.id ?? '');
-
-  const live = liveLists.find(
-    (entry) => String(entry?.serverId ?? '') === serverId,
-  );
-
-  if (!live?.playerList?.length) {
-    return [];
-  }
-
-  return [
-    ...new Set(
-      live.playerList
-        .map((player) => {
-          const id = String(player?.playerId || '');
-          return byId.get(id) || null;
-        })
-        .filter(Boolean),
-    ),
-  ].sort((a, b) => a.localeCompare(b));
-}
-
 async function createApi() {
   fs.mkdirSync(bridgeCfg.authDir, {
     recursive: true,
@@ -181,27 +134,13 @@ async function refreshData() {
   try {
     realm = await fetchRealm();
 
-    let liveLists = [];
-
-    if (typeof api.getLivePlayerLists === 'function') {
-      try {
-        liveLists = await api.getLivePlayerLists();
-      } catch (error) {
-        console.warn(
-          'Could not fetch live Realm player lists:',
-          error?.message || error,
-        );
-      }
-    } else {
-      console.warn(
-        'getLivePlayerLists() is not available in this prismarine-realms version.',
-      );
-    }
-
-    onlinePlayers = getOnlineNames(
-      realm,
-      liveLists,
-    );
+    onlinePlayers = Array.isArray(realm?.players)
+      ? realm.players
+          .filter((player) => player?.online)
+          .map((player) => player.name)
+          .filter(Boolean)
+          .sort((a, b) => a.localeCompare(b))
+      : [];
 
     authenticated = true;
     lastUpdate = Date.now();

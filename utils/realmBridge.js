@@ -183,12 +183,18 @@ async function refreshData() {
 
     let liveLists = [];
 
-    try {
-      liveLists = await api.getLivePlayerLists();
-    } catch (error) {
+    if (typeof api.getLivePlayerLists === 'function') {
+      try {
+        liveLists = await api.getLivePlayerLists();
+      } catch (error) {
+        console.warn(
+          'Could not fetch live Realm player lists:',
+          error?.message || error,
+        );
+      }
+    } else {
       console.warn(
-        'Could not fetch live Realm player lists:',
-        error?.message || error,
+        'getLivePlayerLists() is not available in this prismarine-realms version.',
       );
     }
 
